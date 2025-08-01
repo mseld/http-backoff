@@ -76,7 +76,7 @@ func NewBackoffClient(opts ...Option) *BackoffClient {
 		initialInterval: DefaultInitialInterval,
 		maxInterval:     DefaultMaxInterval,
 		multiplier:      DefaultMultiplier,
-		client:          NewDefaultClient(),
+		client:          http.DefaultClient,
 		RequestLogHook:  func(r *http.Request, err error, n int, next time.Duration) {},
 		ResponseLogHook: func(r *http.Request, w *http.Response, n int, d time.Duration) {},
 		ErrorLogHook:    func(r *http.Request, err error, n int, d time.Duration) {},
@@ -94,7 +94,7 @@ func NewBackoffClient(opts ...Option) *BackoffClient {
 	return &BackoffClient{
 		cfg:             cfg,
 		backOffStrategy: backOffStrategy,
-		Client:          http.DefaultClient,
+		Client:          cfg.client,
 	}
 }
 

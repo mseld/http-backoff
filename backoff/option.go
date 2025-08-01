@@ -57,7 +57,9 @@ func (o optionFunc) apply(c *config) {
 // WithClient sets the HTTP client in Config.
 func WithClient(client *http.Client) Option {
 	return optionFunc(func(c *config) {
-		c.client = client
+		if client != nil {
+			c.client = client
+		}
 	})
 }
 
