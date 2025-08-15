@@ -12,8 +12,8 @@ type (
 )
 
 type config struct {
-	// Service name
-	service string
+	// Agent name
+	agentName string
 
 	// max number of maxRetry
 	maxRetry uint64
@@ -63,10 +63,10 @@ func WithClient(client *http.Client) Option {
 	})
 }
 
-// WithService sets the service name in Config.
-func WithService(service string) Option {
+// WithAgentName sets the agent name in Config.
+func WithAgentName(name string) Option {
 	return optionFunc(func(cfg *config) {
-		cfg.service = service
+		cfg.agentName = name
 	})
 }
 

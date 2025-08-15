@@ -71,7 +71,7 @@ type BackoffClient struct {
 
 func NewBackoffClient(opts ...Option) *BackoffClient {
 	cfg := config{
-		service:         "http-client",
+		agentName:       "http-backoff-client",
 		maxRetry:        DefaultMaxRetry,
 		initialInterval: DefaultInitialInterval,
 		maxInterval:     DefaultMaxInterval,
@@ -236,9 +236,13 @@ func (c *BackoffClient) Execute(r *http.Request) (*Response, error) {
 	f := func() (*Response, error) {
 		attempt++
 		startTime := time.Now()
+
+		// Clone the request for each retry to avoid issues with consumed request bodies
+		clonedReq := r.Clone(r.Context())
+
 		resp, err := c.execute(r)
 		if err != nil {
-			c.cfg.ErrorLogHook(r, err, attempt, time.Since(startTime))
+			c.cfg.ErrorLogHook(clonedReq, err, attempt, time.Since(startTime))
 
 			if errors.Is(err, &RetryableError{}) {
 				return nil, err
@@ -247,15 +251,17 @@ func (c *BackoffClient) Execute(r *http.Request) (*Response, error) {
 			return nil, backoff.Permanent(err)
 		}
 
-		c.cfg.ResponseLogHook(r, resp, attempt, time.Since(startTime))
+		c.cfg.ResponseLogHook(clonedReq, resp, attempt, time.Since(startTime))
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
+			// TODO: handle error reading body
 			// c.cfg.ErrorHook(r, err, attempt, time.Since(startTime))
-			return nil, err
+			resp.Body.Close()
+			return nil, backoff.Permanent(err)
 		}
 
-		defer resp.Body.Close()
+		resp.Body.Close()
 
 		return &Response{
 			Status:     resp.Status,
@@ -282,6 +288,10 @@ func (c *BackoffClient) execute(r *http.Request) (*http.Response, error) {
 		defer cancel()
 	}
 
+	if c.cfg.agentName != "" {
+		r.Header.Set("User-Agent", c.cfg.agentName)
+	}
+
 	resp, err := c.Do(r)
 	if err != nil {
 		if ErrorRetryPolicy(err) {
@@ -304,6 +314,10 @@ func (c *BackoffClient) execute(r *http.Request) (*http.Response, error) {
 }
 
 func ErrorRetryPolicy(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
