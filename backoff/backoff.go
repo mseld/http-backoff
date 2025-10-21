@@ -18,7 +18,7 @@ const (
 	DefaultInitialInterval = 100 * time.Millisecond
 	DefaultMultiplier      = 1.5
 	DefaultMaxInterval     = 5 * time.Second
-	DefaultMaxElapsedTime  = 30 * time.Minute
+	DefaultMaxElapsedTime  = 29 * time.Second
 )
 
 // RetryableSet is a set of HTTP status codes (4xx) that are retryable.
@@ -76,6 +76,7 @@ func NewBackoffClient(opts ...Option) *BackoffClient {
 		initialInterval: DefaultInitialInterval,
 		maxInterval:     DefaultMaxInterval,
 		multiplier:      DefaultMultiplier,
+		maxElapsedTime:  DefaultMaxElapsedTime,
 		client:          http.DefaultClient,
 		RequestLogHook:  func(r *http.Request, err error, n int, next time.Duration) {},
 		ResponseLogHook: func(r *http.Request, w *http.Response, n int, d time.Duration) {},
@@ -86,9 +87,16 @@ func NewBackoffClient(opts ...Option) *BackoffClient {
 		opt.apply(&cfg)
 	}
 
-	var backOffStrategy backoff.BackOff = backoff.NewExponentialBackOff()
+	// Create exponential backoff with configured parameters
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = cfg.initialInterval
+	expBackoff.MaxInterval = cfg.maxInterval
+	expBackoff.Multiplier = cfg.multiplier
+	expBackoff.MaxElapsedTime = cfg.maxElapsedTime
+
+	var backOffStrategy backoff.BackOff = expBackoff
 	if cfg.maxRetry > 0 {
-		backOffStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), cfg.maxRetry)
+		backOffStrategy = backoff.WithMaxRetries(expBackoff, cfg.maxRetry)
 	}
 
 	return &BackoffClient{
@@ -126,7 +134,7 @@ func (c *BackoffClient) Post(ctx context.Context, url string, body io.Reader, he
 	return c.Execute(req)
 }
 
-// Post performs an HTTP POST request with a JSON body.
+// PostJSON performs an HTTP POST request with a JSON body.
 func (c *BackoffClient) PostJSON(ctx context.Context, url string, body any, headers map[string]string) (*Response, error) {
 	req, err := NewRequestBuilder().
 		Method(http.MethodPost).
@@ -201,7 +209,7 @@ func (c *BackoffClient) Patch(ctx context.Context, url string, body io.Reader, h
 	return c.Execute(req)
 }
 
-// PatchJSON performs an HTTP PATCH request.
+// PatchJSON performs an HTTP PATCH request with a JSON body.
 func (c *BackoffClient) PatchJSON(ctx context.Context, url string, body any, headers map[string]string) (*Response, error) {
 	req, err := NewRequestBuilder().
 		Method(http.MethodPatch).
@@ -230,21 +238,22 @@ func (c *BackoffClient) Delete(ctx context.Context, url string, headers map[stri
 	return c.Execute(req)
 }
 
-// Execute performs the HTTP request and handles response.
+// Execute performs the HTTP request with retry logic.
 func (c *BackoffClient) Execute(r *http.Request) (*Response, error) {
 	attempt := 0
 	f := func() (*Response, error) {
 		attempt++
 		startTime := time.Now()
 
-		// Clone the request for each retry to avoid issues with consumed request bodies
-		clonedReq := r.Clone(r.Context())
+		// Clone the request for each retry to preserve the original
+		clonedReq := cloneRequest(r)
 
-		resp, err := c.execute(r)
+		resp, err := c.execute(clonedReq)
 		if err != nil {
 			c.cfg.ErrorLogHook(clonedReq, err, attempt, time.Since(startTime))
 
-			if errors.Is(err, &RetryableError{}) {
+			var retryableErr *RetryableError
+			if errors.As(err, &retryableErr) {
 				return nil, err
 			}
 
@@ -254,14 +263,10 @@ func (c *BackoffClient) Execute(r *http.Request) (*Response, error) {
 		c.cfg.ResponseLogHook(clonedReq, resp, attempt, time.Since(startTime))
 
 		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			// TODO: handle error reading body
-			// c.cfg.ErrorHook(r, err, attempt, time.Since(startTime))
-			resp.Body.Close()
-			return nil, backoff.Permanent(err)
-		}
-
 		resp.Body.Close()
+		if err != nil {
+			return nil, backoff.Permanent(fmt.Errorf("failed to read response body: %w", err))
+		}
 
 		return &Response{
 			Status:     resp.Status,
@@ -275,17 +280,18 @@ func (c *BackoffClient) Execute(r *http.Request) (*Response, error) {
 		c.cfg.RequestLogHook(r, err, attempt, next)
 	}
 
+	// Reset backoff before each Execute call to ensure consistent behavior
+	c.backOffStrategy.Reset()
+
 	return backoff.RetryNotifyWithData(f, c.backOffStrategy, notify)
 }
 
-// execute performs the HTTP request and handles response.
+// execute performs the actual HTTP request.
 func (c *BackoffClient) execute(r *http.Request) (*http.Response, error) {
-	defer c.CloseIdleConnections()
-
 	if c.cfg.timeout != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), *c.cfg.timeout)
-		r = r.WithContext(ctx)
 		defer cancel()
+		r = r.WithContext(ctx)
 	}
 
 	if c.cfg.agentName != "" {
@@ -295,15 +301,14 @@ func (c *BackoffClient) execute(r *http.Request) (*http.Response, error) {
 	resp, err := c.Do(r)
 	if err != nil {
 		if ErrorRetryPolicy(err) {
-			return nil, &RetryableError{
-				Err: err,
-			}
+			return nil, &RetryableError{Err: err}
 		}
-
 		return nil, err
 	}
 
 	if err := ResponseRetryPolicy(resp); err != nil {
+		// Close the body on retryable errors to prevent connection leaks
+		resp.Body.Close()
 		return nil, &RetryableError{
 			Response: resp,
 			Err:      err,
@@ -311,6 +316,27 @@ func (c *BackoffClient) execute(r *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// Close closes idle connections. Call this when you're done with the client
+// or want to clean up connections (e.g., in defer statements or cleanup code).
+func (c *BackoffClient) Close() {
+	c.CloseIdleConnections()
+}
+
+// cloneRequest creates a copy of the request with a fresh body if needed.
+func cloneRequest(r *http.Request) *http.Request {
+	cloned := r.Clone(r.Context())
+
+	// If the original request has a GetBody function, use it to restore the body
+	if r.Body != nil && r.GetBody != nil {
+		body, err := r.GetBody()
+		if err == nil {
+			cloned.Body = body
+		}
+	}
+
+	return cloned
 }
 
 func ErrorRetryPolicy(err error) bool {
@@ -322,8 +348,19 @@ func ErrorRetryPolicy(err error) bool {
 		return true
 	}
 
-	// retry on oauth2 errors
-	if errors.Is(err, &oauth2.RetrieveError{}) {
+	// Retry on OAuth2 token retrieval errors
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		// Don't retry on client errors (4xx) except for specific retryable ones
+		if retrieveErr.Response != nil {
+			statusCode := retrieveErr.Response.StatusCode
+			if statusCode >= 400 && statusCode < 500 {
+				_, retryable := RetryableSet[statusCode]
+				return retryable
+			}
+			// Retry on 5xx server errors
+			return statusCode >= 500
+		}
 		return true
 	}
 
@@ -331,17 +368,14 @@ func ErrorRetryPolicy(err error) bool {
 }
 
 func ResponseRetryPolicy(resp *http.Response) error {
-	// RetryableSet is recoverable status codes.
+	// Check retryable 4xx status codes
 	if _, ok := RetryableSet[resp.StatusCode]; ok {
-		return fmt.Errorf("status code retryable: %s", resp.Status)
+		return fmt.Errorf("retryable status code: %s", resp.Status)
 	}
 
-	// Check the response code. We retry on 500-range responses to allow
-	// the server time to recover, as 500's are typically not permanent
-	// errors and may relate to outages on the server side. This will catch
-	// invalid response codes as well, like [InternalServerError, BadGateway, ServiceUnavailable, GatewayTimeout).
+	// Retry on 5xx errors except 501 Not Implemented
 	if resp.StatusCode >= 500 && resp.StatusCode != http.StatusNotImplemented {
-		return fmt.Errorf("unexpected status code %s", resp.Status)
+		return fmt.Errorf("server error: %s", resp.Status)
 	}
 
 	return nil

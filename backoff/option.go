@@ -12,34 +12,37 @@ type (
 )
 
 type config struct {
-	// Agent name
+	// agentName sets the User-Agent header
 	agentName string
 
-	// max number of maxRetry
+	// maxRetry is the maximum number of retry attempts (0 = unlimited with MaxElapsedTime limit)
 	maxRetry uint64
 
-	// Minimum time to wait before retrying a request.
+	// initialInterval is the minimum time to wait before retrying a request
 	initialInterval time.Duration
 
-	// Maximum time to wait before retrying a request.
+	// maxInterval is the maximum time to wait before retrying a request
 	maxInterval time.Duration
 
-	// Exponential backoff multiplier.
+	// maxElapsedTime is the maximum total time for all retries
+	maxElapsedTime time.Duration
+
+	// multiplier is the exponential backoff multiplier
 	multiplier float64
 
-	// Request timeout.
+	// timeout is the request timeout per attempt
 	timeout *time.Duration
 
-	// client Internal HTTP client.
+	// client is the internal HTTP client
 	client *http.Client
 
-	// RequestLogHook allows a user-supplied function to be called before each retry.
+	// RequestLogHook is called before each retry
 	RequestLogHook RequestLogFunc
 
-	// ResponseLogHook allows a user-supplied function to be called with the response from each HTTP request executed.
+	// ResponseLogHook is called with the response from each HTTP request
 	ResponseLogHook ResponseLogFunc
 
-	// ErrorLogHook allows a user-supplied function to be called when an error occurs.
+	// ErrorLogHook is called when an error occurs
 	ErrorLogHook ErrorLogFunc
 }
 
@@ -70,7 +73,7 @@ func WithAgentName(name string) Option {
 	})
 }
 
-// WithTimeout sets the request timeout in Config.
+// WithTimeout sets the request timeout per attempt in Config.
 func WithTimeout(timeout time.Duration) Option {
 	return optionFunc(func(cfg *config) {
 		cfg.timeout = &timeout
@@ -78,6 +81,7 @@ func WithTimeout(timeout time.Duration) Option {
 }
 
 // WithMaxRetry sets the max retry count in Config.
+// Use 0 for unlimited retries (limited by MaxElapsedTime).
 func WithMaxRetry(max uint64) Option {
 	return optionFunc(func(c *config) {
 		c.maxRetry = max
@@ -85,19 +89,27 @@ func WithMaxRetry(max uint64) Option {
 }
 
 // WithInitialInterval sets the initial retry delay in Config.
-func WithInitialInterval(min time.Duration) Option {
+func WithInitialInterval(interval time.Duration) Option {
 	return optionFunc(func(c *config) {
-		c.initialInterval = min
+		c.initialInterval = interval
 	})
 }
 
 // WithMaxInterval sets the maximum retry delay in Config.
-func WithMaxInterval(max time.Duration) Option {
+func WithMaxInterval(interval time.Duration) Option {
 	return optionFunc(func(c *config) {
-		c.maxInterval = max
+		c.maxInterval = interval
 	})
 }
 
+// WithMaxElapsedTime sets the maximum total time for all retries.
+func WithMaxElapsedTime(duration time.Duration) Option {
+	return optionFunc(func(c *config) {
+		c.maxElapsedTime = duration
+	})
+}
+
+// WithMultiplier sets the exponential backoff multiplier.
 func WithMultiplier(multiplier float64) Option {
 	return optionFunc(func(c *config) {
 		c.multiplier = multiplier
@@ -107,20 +119,26 @@ func WithMultiplier(multiplier float64) Option {
 // WithRequestLogHook sets the request log hook in Config.
 func WithRequestLogHook(hook RequestLogFunc) Option {
 	return optionFunc(func(c *config) {
-		c.RequestLogHook = hook
+		if hook != nil {
+			c.RequestLogHook = hook
+		}
 	})
 }
 
 // WithResponseLogHook sets the response log hook in Config.
 func WithResponseLogHook(hook ResponseLogFunc) Option {
 	return optionFunc(func(c *config) {
-		c.ResponseLogHook = hook
+		if hook != nil {
+			c.ResponseLogHook = hook
+		}
 	})
 }
 
 // WithErrorLogHook sets the error hook in Config.
 func WithErrorLogHook(hook ErrorLogFunc) Option {
 	return optionFunc(func(c *config) {
-		c.ErrorLogHook = hook
+		if hook != nil {
+			c.ErrorLogHook = hook
+		}
 	})
 }

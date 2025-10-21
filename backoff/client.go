@@ -37,7 +37,7 @@ func NewOAuth2ClientWithOtel(credentials clientcredentials.Config, attributes ..
 
 // WithAgentNameAttribute sets
 func WithAgentNameAttribute(name string) attribute.KeyValue {
-	return attribute.String("agent-name", name)
+	return attribute.String("agent_name", name)
 }
 
 // newClientWithTransport creates a new HTTP client with a given transport and optional OpenTelemetry instrumentation.
